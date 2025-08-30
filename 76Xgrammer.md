@@ -342,5 +342,24 @@ if __name__ == "__main__":
 
 
 
-## 5 收个尾
+# CI不通过_8.29
+
+```
+___
+ERROR
+collecting
+model_executor/guided_decoding/test_xgrammar_checker.py
+model_executor/guided_decoding/test_xgrammar_checker.py
+Error: Process completed with exit code 8.
+```
+
+log :
+
+```
+model_executor/guided_decoding/test_xgrammar_checker.py:20: in <module>
+    from fastdeploy.model_executor.guided_decoding.xgrammar_backend import XGrammarChecker
+/usr/local/lib/python3.10/site-packages/fastdeploy/model_executor/guided_decoding/xgrammar_backend.py:23: in <module>
+    import torch
+E   ModuleNotFoundError: No module named 'torch'
+```
 
