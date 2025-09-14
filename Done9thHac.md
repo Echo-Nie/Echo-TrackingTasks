@@ -414,6 +414,340 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
+## 37 top_k
+
+### First Try size=1
+
+```python
+# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import unittest
+
+import numpy as np
+import paddle
+
+from fastdeploy.model_executor.ops.gpu import top_k_renorm_probs
+
+
+class TestTopKRenormProbs(unittest.TestCase):
+
+    def setUp(self):
+        paddle.set_device("gpu")
+        np.random.seed(42)
+
+    def test_basic_functionality(self):
+        """Test the operator"""
+        batch_size = 1
+        vocab_size = 5
+        # Construct a valid probability distribution
+        probs = np.random.rand(batch_size, vocab_size).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([2], dtype="int64")
+
+        probs_tensor = paddle.to_tensor(probs)
+        top_k_tensor = paddle.to_tensor(top_k)
+
+        # Call the operator
+        renorm_probs = top_k_renorm_probs(probs_tensor, top_k_tensor)[0].numpy()
+        renorm_probs = renorm_probs.reshape(batch_size, vocab_size)
+
+        self.assertEqual(renorm_probs.shape, probs.shape)
+
+        # Non top-k positions must be zero
+        top_indices = np.argsort(probs[0])[::-1][: top_k[0]]
+        for j in range(vocab_size):
+            if j not in top_indices:
+                self.assertAlmostEqual(renorm_probs[0, j], 0.0, places=6)
+
+        self.assertAlmostEqual(renorm_probs[0].sum(), 1.0, places=6)
+
+    def test_edge_cases(self):
+        """Test the operator with edge-case top_k values"""
+        probs = np.array([[0.1, 0.3, 0.4, 0.2]], dtype="float32")
+
+        # Case 1: top_k = 1, only the max element remains
+        top_k_tensor = paddle.to_tensor(np.array([1], dtype="int64"))
+        renorm_probs = top_k_renorm_probs(paddle.to_tensor(probs), top_k_tensor)[0].numpy()
+        renorm_probs = renorm_probs.reshape(1, -1)
+        self.assertEqual((renorm_probs > 0).sum(), 1)  # Only one non-zero element
+        self.assertAlmostEqual(renorm_probs.sum(), 1.0, places=6)
+
+        # Case 2: top_k = vocab_size, output should match input
+        top_k_tensor = paddle.to_tensor(np.array([4], dtype="int64"))
+        renorm_probs = top_k_renorm_probs(paddle.to_tensor(probs), top_k_tensor)[0].numpy()
+        renorm_probs = renorm_probs.reshape(1, -1)
+        np.testing.assert_allclose(renorm_probs, probs, rtol=1e-6, atol=1e-6)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+```
+
+### add size=2,3
+
+```python
+# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import unittest
+import numpy as np
+import paddle
+
+from fastdeploy.model_executor.ops.gpu import top_k_renorm_probs
+
+
+class TestTopKRenormProbs(unittest.TestCase):
+    def setUp(self):
+        paddle.set_device("gpu")
+        np.random.seed(42)
+
+    def _check_output(self, probs, top_k):
+        probs_tensor = paddle.to_tensor(probs)
+        top_k_tensor = paddle.to_tensor(top_k)
+        renorm_probs = top_k_renorm_probs(probs_tensor, top_k_tensor).numpy()
+
+        self.assertEqual(renorm_probs.shape, probs.shape)
+
+        batch_size, vocab_size = probs.shape
+        for b in range(batch_size):
+            self.assertAlmostEqual(renorm_probs[b].sum(), 1.0, places=6)
+            top_indices = np.argsort(probs[b])[::-1][: top_k[b]]
+            for j in range(vocab_size):
+                if j not in top_indices:
+                    self.assertAlmostEqual(renorm_probs[b, j], 0.0, places=6)
+
+    def test_single_batch_basic(self):
+        """Test with batch_size = 1"""
+        probs = np.random.rand(1, 5).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([2], dtype="int64")
+        self._check_output(probs, top_k)
+
+    def test_single_batch_edge_cases(self):
+        """Test edge cases with batch_size = 1"""
+        probs = np.array([[0.1, 0.3, 0.4, 0.2]], dtype="float32")
+
+        # top_k = 1
+        self._check_output(probs, np.array([1], dtype="int64"))
+
+        # top_k = vocab_size
+        renorm_probs = top_k_renorm_probs(
+            paddle.to_tensor(probs),
+            paddle.to_tensor(np.array([4], dtype="int64"))
+        ).numpy()
+        np.testing.assert_allclose(renorm_probs, probs, rtol=1e-6, atol=1e-6)
+
+    def test_batch_size_two(self):
+        """Test with batch_size = 2"""
+        probs = np.random.rand(2, 5).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([2, 3], dtype="int64")
+        self._check_output(probs, top_k)
+
+    def test_batch_size_three(self):
+        """Test with batch_size = 3"""
+        probs = np.random.rand(3, 6).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([1, 2, 4], dtype="int64")
+        self._check_output(probs, top_k)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+```
+
+### Print
+
+```python
+# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import unittest
+import numpy as np
+import paddle
+
+from fastdeploy.model_executor.ops.gpu import top_k_renorm_probs
+
+
+class TestTopKRenormProbs(unittest.TestCase):
+    """Unit tests for top_k_renorm_probs operator"""
+
+    def setUp(self):
+        paddle.set_device("gpu")
+        np.random.seed(42)
+
+    def _check_output(self, probs, top_k):
+        """Helper to validate shape, normalization and masking"""
+        print("\n=== Running check ===")
+        print("Input probs shape:", probs.shape)
+        print("Input top_k:", top_k)
+
+        probs_tensor = paddle.to_tensor(probs)
+        top_k_tensor = paddle.to_tensor(top_k)
+        renorm_probs = top_k_renorm_probs(probs_tensor, top_k_tensor).numpy()
+
+        print("Output shape:", renorm_probs.shape)
+        print("Output probs:\n", renorm_probs)
+
+        self.assertEqual(renorm_probs.shape, probs.shape)
+
+        batch_size, vocab_size = probs.shape
+        for b in range(batch_size):
+            sum_val = renorm_probs[b].sum()
+            print(f"Batch {b}: sum={sum_val:.6f}")
+            self.assertAlmostEqual(sum_val, 1.0, places=6)
+
+            top_indices = np.argsort(probs[b])[::-1][: top_k[b]]
+            mask_non_topk = [j for j in range(vocab_size) if j not in top_indices]
+            if mask_non_topk:
+                print(f"Batch {b}: non-top-k indices {mask_non_topk} should be zero")
+
+            for j in mask_non_topk:
+                self.assertAlmostEqual(renorm_probs[b, j], 0.0, places=6)
+
+    def test_single_batch_basic(self):
+        """Test with batch_size = 1"""
+        probs = np.random.rand(1, 5).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([2], dtype="int64")
+        self._check_output(probs, top_k)
+
+    def test_single_batch_edge_cases(self):
+        """Test edge cases with batch_size = 1"""
+        probs = np.array([[0.1, 0.3, 0.4, 0.2]], dtype="float32")
+
+        # top_k = 1
+        self._check_output(probs, np.array([1], dtype="int64"))
+
+        # top_k = vocab_size
+        renorm_probs = top_k_renorm_probs(
+            paddle.to_tensor(probs),
+            paddle.to_tensor(np.array([4], dtype="int64"))
+        ).numpy()
+        print("\nEdge case top_k=vocab_size")
+        print("Input probs:\n", probs)
+        print("Output probs:\n", renorm_probs)
+        np.testing.assert_allclose(renorm_probs, probs, rtol=1e-6, atol=1e-6)
+
+    def test_batch_size_two(self):
+        """Test with batch_size = 2"""
+        probs = np.random.rand(2, 5).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([2, 3], dtype="int64")
+        self._check_output(probs, top_k)
+
+    def test_batch_size_three(self):
+        """Test with batch_size = 3"""
+        probs = np.random.rand(3, 6).astype("float32")
+        probs /= probs.sum(axis=1, keepdims=True)
+        top_k = np.array([1, 2, 4], dtype="int64")
+        self._check_output(probs, top_k)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+```
+
+
+
+### Output
+
+```bash
+=== Running check ===
+Input probs shape: (3, 6)
+Input top_k: [1 2 4]
+W0914 10:01:09.158907  2341 gpu_resources.cc:114] Please NOTE: device: 0, GPU Compute Capability: 8.0, Driver API Version: 13.0, Runtime API Version: 12.8
+Output shape: (3, 6)
+Output probs:
+ [[0.         1.         0.         0.         0.         0.        ]
+ [0.         0.47175145 0.         0.         0.         0.5282486 ]
+ [0.44425836 0.11332123 0.         0.         0.16236813 0.28005224]]
+Batch 0: sum=1.000000
+Batch 0: non-top-k indices [0, 2, 3, 4, 5] should be zero
+Batch 1: sum=1.000000
+Batch 1: non-top-k indices [0, 2, 3, 4] should be zero
+Batch 2: sum=1.000000
+Batch 2: non-top-k indices [2, 3] should be zero
+.
+=== Running check ===
+Input probs shape: (2, 5)
+Input top_k: [2 3]
+Output shape: (2, 5)
+Output probs:
+ [[0.         0.5649906  0.4350094  0.         0.        ]
+ [0.         0.         0.3981753  0.2763285  0.32549617]]
+Batch 0: sum=1.000000
+Batch 0: non-top-k indices [0, 3, 4] should be zero
+Batch 1: sum=1.000000
+Batch 1: non-top-k indices [0, 1] should be zero
+.
+=== Running check ===
+Input probs shape: (1, 5)
+Input top_k: [2]
+Output shape: (1, 5)
+Output probs:
+ [[0.        0.5649906 0.4350094 0.        0.       ]]
+Batch 0: sum=1.000000
+Batch 0: non-top-k indices [0, 3, 4] should be zero
+.
+=== Running check ===
+Input probs shape: (1, 4)
+Input top_k: [1]
+Output shape: (1, 4)
+Output probs:
+ [[0. 0. 1. 0.]]
+Batch 0: sum=1.000000
+Batch 0: non-top-k indices [0, 1, 3] should be zero
+
+Edge case top_k=vocab_size
+Input probs:
+ [[0.1 0.3 0.4 0.2]]
+Output probs:
+ [[0.1 0.3 0.4 0.2]]
+.
+----------------------------------------------------------------------
+Ran 4 tests in 0.197s
+
+OK
+```
+
 
 
 ## 49 pre_cache_len_concat
@@ -1447,4 +1781,6 @@ class TestReasoningParserManager(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 ```
+
+
 
